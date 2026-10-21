@@ -1,0 +1,14 @@
+docker==7.1.0
+fastapi==0.128.0
+uvicorn==0.40.0
+pydantic==2.12.5
+sqlalchemy==2.0.52
+alembic==1.18.4
+asyncpg==0.31.0
+passlib[argon2]==1.7.4
+python-jose[cryptography]==3.5.0
+httpx==0.28.1
+
+# tests
+pytest==8.3.4
+pytest-asyncio==1.3.0

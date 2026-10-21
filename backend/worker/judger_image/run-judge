@@ -1,0 +1,55 @@
+#!/bin/sh
+# Fixed runner used by the judge image. It never evaluates source text.
+# Usage: run-judge <py|cpp|java> <seconds> <memory_mb>
+set -u
+
+lang="${1:-}"
+limit_s="${2:-2}"
+mem_mb="${3:-256}"
+
+cd /workspace || exit 2
+rm -f stdout.txt stderr.txt time.txt compile_code compile_output.txt exit_code
+
+# Cap files created by the candidate/compiler at 2 MiB.
+ulimit -f 4096
+
+compile_code=0
+case "$lang" in
+  py)
+    /usr/bin/timeout -k 1 15s /usr/bin/python3 -m py_compile /workspace/main.py \
+      > /workspace/compile_output.txt 2>&1
+    compile_code=$?
+    cmd="/usr/bin/python3 -u main.py"
+    ;;
+  cpp)
+    /usr/bin/timeout -k 1 15s /usr/bin/g++ -O2 -o /workspace/program /workspace/main.cpp \
+      > /workspace/compile_output.txt 2>&1
+    compile_code=$?
+    cmd="/workspace/program"
+    ;;
+  java)
+    /usr/bin/timeout -k 1 20s /usr/bin/javac -d /workspace /workspace/Main.java \
+      > /workspace/compile_output.txt 2>&1
+    compile_code=$?
+    heap=$((mem_mb - 32))
+    if [ "$heap" -lt 16 ]; then heap=16; fi
+    cmd="/usr/bin/java -Xmx${heap}m -cp /workspace Main"
+    ;;
+  *)
+    echo 2 > /workspace/compile_code
+    echo "unsupported language" > /workspace/compile_output.txt
+    echo 0 > /workspace/exit_code
+    exit 0
+    ;;
+esac
+
+echo "$compile_code" > /workspace/compile_code
+if [ "$compile_code" -ne 0 ]; then
+  echo 0 > /workspace/exit_code
+  exit 0
+fi
+
+/usr/bin/time -f "MEM:%M CPU:%U+%S" -o /workspace/time.txt \
+  /usr/bin/timeout -k 1 "$limit_s" /bin/sh -c "$cmd" \
+  < /workspace/input.txt > /workspace/stdout.txt 2> /workspace/stderr.txt
+echo $? > /workspace/exit_code
