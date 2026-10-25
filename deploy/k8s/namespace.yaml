@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: yukti-code
+  labels:
+    app.kubernetes.io/name: yukti-code
+    app.kubernetes.io/part-of: online-judge

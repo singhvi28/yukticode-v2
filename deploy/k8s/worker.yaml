@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: judge-worker
+  namespace: yukti-code
+  labels:
+    app: judge-worker
+    app.kubernetes.io/name: yukti-worker
+    app.kubernetes.io/part-of: online-judge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: judge-worker
+  template:
+    metadata:
+      labels:
+        app: judge-worker
+        app.kubernetes.io/name: yukti-worker
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: judge-worker
+          image: cf-clone-v2-worker:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 9100
+              name: metrics
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: DATABASE_URL
+            - name: DATABASE_URL_PG
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: DATABASE_URL_PG
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: JWT_SECRET
+            - name: JOB_LEASE_SECONDS
+              value: "600"
+            - name: JOB_MAX_ATTEMPTS
+              value: "3"
+            - name: JUDGE_IMAGE
+              value: "cf-clone-v2-judge:latest"
+            - name: JUDGE_RUNTIME
+              value: "auto"
+            - name: JUDGE_MAX_OUTPUT_BYTES
+              value: "102400"
+          volumeMounts:
+            - name: docker-sock
+              mountPath: /var/run/docker.sock
+          livenessProbe:
+            tcpSocket:
+              port: 9100
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: 9100
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 2
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+      volumes:
+        - name: docker-sock
+          hostPath:
+            path: /var/run/docker.sock
+            type: Socket

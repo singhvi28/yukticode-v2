@@ -5,6 +5,7 @@ import os
 import socket
 import time
 
+from prometheus_client import start_http_server
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.future import select
 
@@ -12,6 +13,13 @@ from server.config import DATABASE_URL, JOB_LEASE_SECONDS
 from server.db.models import Problem, Submission, TestCase
 from server.jobs import claim_job, complete_job, fail_job, requeue_expired_jobs
 from worker import judger
+from worker.metrics import (
+    WORKER_ACTIVE_JOBS,
+    WORKER_JOB_DURATION_SECONDS,
+    WORKER_JOBS_TOTAL,
+    WORKER_REAPED_CONTAINERS_TOTAL,
+    WORKER_REQUEUED_LEASES_TOTAL,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,6 +72,9 @@ async def process_job(job: dict, worker_id: str) -> None:
     submission_id = job.get("submission_id")
     logger.info("processing job %s kind=%s attempt=%s", job_id, kind, job.get("attempts"))
 
+    WORKER_ACTIVE_JOBS.inc()
+    start_time = time.monotonic()
+    job_status = "failed"
     engine = create_async_engine(DATABASE_URL, echo=False, pool_pre_ping=True)
     Session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     try:
@@ -71,6 +82,7 @@ async def process_job(job: dict, worker_id: str) -> None:
             if kind == "submit":
                 data = await fetch_submission_data(db, payload["submission_id"])
                 if not data:
+                    job_status = "failed"
                     await fail_job(
                         db,
                         job_id,
@@ -90,6 +102,7 @@ async def process_job(job: dict, worker_id: str) -> None:
                 # The source owner does not need the full stdout stored on the
                 # submission; message and metrics are enough for the UI.
                 result.pop("std_out", None)
+                job_status = str(result.get("status", "done"))
                 await complete_job(
                     db,
                     job_id,
@@ -109,6 +122,7 @@ async def process_job(job: dict, worker_id: str) -> None:
                     time_limit_ms=int(payload["time_limit"]),
                     memory_limit_mb=int(payload["memory_limit"]),
                 )
+                job_status = str(result.get("status", "done"))
                 await complete_job(db, job_id, result, worker_id=worker_id)
                 return
 
@@ -121,9 +135,11 @@ async def process_job(job: dict, worker_id: str) -> None:
                     time_limit_ms=int(payload["time_limit"]),
                     memory_limit_mb=int(payload["memory_limit"]),
                 )
+                job_status = str(result.get("status", "done"))
                 await complete_job(db, job_id, result, worker_id=worker_id)
                 return
 
+            job_status = "failed"
             await fail_job(
                 db,
                 job_id,
@@ -132,18 +148,29 @@ async def process_job(job: dict, worker_id: str) -> None:
                 submission_id=submission_id,
             )
     except Exception as exc:
+        job_status = "failed"
         logger.exception("job %s failed", job_id)
         async with Session() as db:
             await fail_job(
                 db, job_id, str(exc), worker_id=worker_id, submission_id=submission_id
             )
     finally:
+        duration = time.monotonic() - start_time
+        WORKER_JOB_DURATION_SECONDS.labels(kind=kind).observe(duration)
+        WORKER_JOBS_TOTAL.labels(kind=kind, status=job_status).inc()
+        WORKER_ACTIVE_JOBS.dec()
         await engine.dispose()
 
 
 async def run() -> None:
     worker_id = f"{socket.gethostname()}:{os.getpid()}"
     logger.info("worker %s starting", worker_id)
+
+    try:
+        start_http_server(9100, addr="0.0.0.0")
+        logger.info("Prometheus metrics server started on port 9100")
+    except Exception as exc:
+        logger.warning("Could not start Prometheus metrics server: %s", exc)
 
     try:
         judger.ensure_image(judger._get_client())
@@ -160,7 +187,9 @@ async def run() -> None:
                 async with Session() as db:
                     # Recover jobs whose worker died, even when newer work is
                     # waiting in the queue.
-                    await requeue_expired_jobs(db)
+                    requeued = await requeue_expired_jobs(db)
+                    if requeued:
+                        WORKER_REQUEUED_LEASES_TOTAL.inc(len(requeued))
                     job = await claim_job(db, worker_id, JOB_LEASE_SECONDS)
 
                 if job:
@@ -172,6 +201,7 @@ async def run() -> None:
                     removed = await asyncio.to_thread(judger.reap_orphaned_containers)
                     if removed:
                         logger.info("reaped %d orphaned judge container(s)", removed)
+                        WORKER_REAPED_CONTAINERS_TOTAL.inc(removed)
 
                 await asyncio.sleep(1.0)
             except asyncio.CancelledError:

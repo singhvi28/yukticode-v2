@@ -1,0 +1,43 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: judge-worker-autoscaler
+  namespace: yukti-code
+  labels:
+    app: judge-worker
+    app.kubernetes.io/name: judge-worker-autoscaler
+    app.kubernetes.io/part-of: online-judge
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: judge-worker
+  minReplicaCount: 1
+  maxReplicaCount: 10
+  pollingInterval: 5
+  cooldownPeriod: 30
+  triggers:
+    - type: postgresql
+      metadata:
+        connectionFromEnv: DATABASE_URL_PG
+        query: "SELECT count(*) FROM judge_jobs WHERE status = 'queued' AND available_at <= now();"
+        targetQueryValue: "5"
+        activationTargetQueryValue: "1"
+
+---
+# Optional TriggerAuthentication resource for direct Secret binding
+# (Alternative pattern to connectionFromEnv)
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: keda-postgres-auth
+  namespace: yukti-code
+  labels:
+    app: judge-worker
+    app.kubernetes.io/name: keda-postgres-auth
+    app.kubernetes.io/part-of: online-judge
+spec:
+  secretTargetRef:
+    - parameter: connection
+      name: postgres-secret
+      key: DATABASE_URL_PG

@@ -7,6 +7,7 @@ from server.auth import router as auth_router
 from server.config import CORS_ORIGINS
 from server.contests_routes import router as contests_router
 from server.db.database import async_session_maker
+from server.metrics import PrometheusMiddleware, metrics_endpoint
 from server.routes import router
 
 app = FastAPI(title="YuktiCode v2", version="2.0.0")
@@ -18,11 +19,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(PrometheusMiddleware)
 
 app.include_router(auth_router)
 app.include_router(router)
 app.include_router(contests_router)
 app.include_router(admin_router)
+
+app.add_api_route("/metrics", metrics_endpoint, methods=["GET"])
 
 
 @app.get("/health")
